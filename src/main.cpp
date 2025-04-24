@@ -7,12 +7,25 @@
 #define BUTTON_DEBOUNCE_TIME 250  // Debounce time in milliseconds
 #define ADC_CENTER 512  // Center value for ADC readings
 #define ADC_DEADZONE 20  // Deadzone around center value
+#define LED_PATTERN_INTERVAL 200  // LED pattern interval in milliseconds
 
 // Create an array of Servo objects
 Servo servos[NUM_SERVOS];
 
 // Define the pins for each servo
 const int servoPins[NUM_SERVOS] = {2, 3, 4, 5, 6, 7};
+
+// Define LED pin
+const int LED_PIN = LED_BUILTIN;
+
+// Define mode patterns
+const bool mode1Pattern[8] = {1, 0, 0, 0, 0, 0, 0, 0};
+const bool mode2Pattern[8] = {1, 0, 1, 0, 0, 0, 0, 0};
+const bool mode3Pattern[8] = {1, 0, 1, 0, 1, 0, 0, 0};
+
+// LED pattern variables
+unsigned long lastPatternTime = 0;
+int patternIndex = 0;
 
 // Define joystick pins
 // Joystick 1
@@ -62,6 +75,13 @@ bool lastButtonState = false;
 unsigned long lastDebounceTime = 0;
 bool servo5State = false;  // false = 180 degrees, true = 0 degrees
 
+// Mode toggle button variables
+bool modeButtonState = false;
+bool lastModeButtonState = false;
+unsigned long lastModeDebounceTime = 0;
+bool modeButtonPressed = false;
+unsigned long modeButtonPressTime = 0;
+
 // ADC buffers for each axis
 int joy1XBuffer[ADC_BUFFER_SIZE] = {0};
 int joy1YBuffer[ADC_BUFFER_SIZE] = {0};
@@ -99,7 +119,7 @@ int applyInversion(int value, bool invert) {
 // Function to print help information
 void printHelp() {
   Serial.println("Available commands:");
-  Serial.println("MODE=<1|2>     - Set operation mode (1=Direct, 2=Incremental)");
+  Serial.println("MODE=<1|2|3>  - Set operation mode (1=Direct, 2=Incremental, 3=LED pattern)");
   Serial.println("SPEED=<value>  - Set rotation speed for mode 2 (1-10)");
   Serial.println("VX1=<value>    - Set threshold for Joystick 1 X-axis");
   Serial.println("VY1=<value>    - Set threshold for Joystick 1 Y-axis");
@@ -117,6 +137,9 @@ void setup() {
   // Initialize serial communication
   Serial.begin(9600);
   Serial.println("Servo Control System Ready");
+  
+  // Set LED pin as output
+  pinMode(LED_PIN, OUTPUT);
   
   // Attach servos to their respective pins
   for (int i = 0; i < NUM_SERVOS; i++) {
@@ -152,7 +175,7 @@ void processCommand(String command) {
   // Check for MODE command
   if (command.startsWith("MODE=")) {
     int newMode = command.substring(5).toInt();
-    if (newMode == 1 || newMode == 2) {
+    if (newMode >= 1 && newMode <= 3) {
       operationMode = newMode;
       // Reset all servos to 90 degrees
       for (int i = 0; i < NUM_SERVOS; i++) {
@@ -163,7 +186,7 @@ void processCommand(String command) {
       Serial.println(operationMode);
       Serial.println("All servos reset to 90 degrees");
     } else {
-      Serial.println("Invalid mode. Use 1 or 2.");
+      Serial.println("Invalid mode. Use 1, 2, or 3.");
     }
     return;
   }
@@ -315,6 +338,33 @@ void updateServoPosition(int& currentPos, int adcValue, int& lastValue, int thre
 }
 
 void loop() {
+  // Update LED pattern
+  if (millis() - lastPatternTime >= LED_PATTERN_INTERVAL) {
+    lastPatternTime = millis();
+    
+    // Get the current pattern based on mode
+    const bool* currentPattern;
+    switch (operationMode) {
+      case 1:
+        currentPattern = mode1Pattern;
+        break;
+      case 2:
+        currentPattern = mode2Pattern;
+        break;
+      case 3:
+        currentPattern = mode3Pattern;
+        break;
+      default:
+        currentPattern = mode1Pattern;
+    }
+    
+    // Set LED state based on current pattern
+    digitalWrite(LED_PIN, currentPattern[patternIndex]);
+    
+    // Update pattern index
+    patternIndex = (patternIndex + 1) % 8;
+  }
+
   // Read joystick values and update buffers
   joy1XBuffer[bufferIndex] = analogRead(JOYSTICK1_VRX);
   joy1YBuffer[bufferIndex] = analogRead(JOYSTICK1_VRY);
@@ -326,6 +376,46 @@ void loop() {
   int avgJoy1Y = calculateAverage(joy1YBuffer);
   int avgJoy2X = calculateAverage(joy2XBuffer);
   int avgJoy2Y = calculateAverage(joy2YBuffer);
+
+  // Handle mode toggle button
+  bool modeButtonReading = !digitalRead(JOYSTICK2_SW);  // Invert because we're using INPUT_PULLUP
+
+  // Check if the mode button state has changed
+  if (modeButtonReading != lastModeButtonState) {
+    lastModeDebounceTime = millis();
+  }
+
+  // If the mode button state has been stable for the debounce period
+  if ((millis() - lastModeDebounceTime) > BUTTON_DEBOUNCE_TIME) {
+    // If the button state has changed
+    if (modeButtonReading != modeButtonState) {
+      modeButtonState = modeButtonReading;
+      
+      if (modeButtonState) {
+        // Button pressed - start timing
+        modeButtonPressTime = millis();
+        modeButtonPressed = true;
+      } else {
+        // Button released - check if we should toggle mode
+        if (modeButtonPressed && (millis() - modeButtonPressTime) > 250) {
+          // Toggle between modes 1, 2, and 3
+          operationMode = (operationMode % 3) + 1;
+          Serial.print("Operation mode toggled to: ");
+          Serial.println(operationMode);
+          
+          // Reset all servos to 90 degrees when mode changes
+          for (int i = 0; i < NUM_SERVOS; i++) {
+            servos[i].write(90);
+            currentServoPositions[i] = 90;
+          }
+        }
+        modeButtonPressed = false;
+      }
+    }
+  }
+
+  // Update the last mode button state
+  lastModeButtonState = modeButtonReading;
 
   if (operationMode == 1) {
     // Mode 1: Direct control with thresholds
@@ -364,7 +454,7 @@ void loop() {
       currentServoPositions[3] = servo3Angle;
       lastJoy2Y = avgJoy2Y;
     }
-  } else {
+  } else if (operationMode == 2) {
     // Mode 2: Incremental control with deadzone and thresholds
     updateServoPosition(currentServoPositions[0], avgJoy1X, lastMode2Joy1X, vx1Mode2Threshold, vx1Invert);
     updateServoPosition(currentServoPositions[1], avgJoy1Y, lastMode2Joy1Y, vy1Mode2Threshold, vy1Invert);
@@ -377,11 +467,12 @@ void loop() {
     servos[2].write(currentServoPositions[2]);
     servos[3].write(currentServoPositions[3]);
   }
+  // Mode 3: Joysticks are disabled, only PWM commands work
 
   // Update buffer index
   bufferIndex = (bufferIndex + 1) % ADC_BUFFER_SIZE;
 
-  // Read the button state
+  // Read the button state for JOYSTICK1_SW
   bool reading = !digitalRead(JOYSTICK1_SW);  // Invert because we're using INPUT_PULLUP
 
   // Check if the button state has changed
