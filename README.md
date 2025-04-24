@@ -2,6 +2,8 @@
 
 This project implements a control system for a robotic arm using Arduino, servos, and joysticks. The system provides multiple control modes and configuration options through serial commands.
 
+The robotic arm that was used is a [3D print from Trax](https://makerworld.com/en/models/528885-robotic-arm#profileId-445995) that I've found in makerworld and printed on my Bambu Lab P1S.
+
 ## Features
 
 - Multiple control modes:
